@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Response models and error codes for OpenViking HTTP Server."""
 
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
 
@@ -18,8 +18,8 @@ class ErrorInfo(BaseModel):
 class UsageInfo(BaseModel):
     """Usage information."""
 
-    tokens: Optional[int] = None
-    vectors_scanned: Optional[int] = None
+    duration_ms: Optional[float] = None
+    token_total: Optional[int] = None
 
 
 class Response(BaseModel):
@@ -30,6 +30,7 @@ class Response(BaseModel):
     error: Optional[ErrorInfo] = None
     time: float = 0.0
     usage: Optional[UsageInfo] = None
+    telemetry: Optional[Dict[str, Any]] = None
 
 
 # Error code to HTTP status code mapping
