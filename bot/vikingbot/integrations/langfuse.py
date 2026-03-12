@@ -207,23 +207,47 @@ class LangfuseClient:
             yield None
             return
 
+        observation = None
         try:
-            with self._client.start_as_current_generation(
-                name=name,
-                model=model,
-                input=prompt,
-                metadata=metadata or {},
-            ) as generation:
-                yield generation
+            # Use start_observation for the current SDK version
+            if hasattr(self._client, "start_as_current_observation"):
+                with self._client.start_as_current_observation(
+                    name=name,
+                    as_type="generation",
+                    model=model,
+                    input=prompt,
+                    metadata=metadata or {},
+                ) as obs:
+                    yield obs
+            elif hasattr(self._client, "start_observation"):
+                observation = self._client.start_observation(
+                    name=name,
+                    as_type="generation",
+                    model=model,
+                    input=prompt,
+                    metadata=metadata or {},
+                )
+                yield observation
+            else:
+                logger.debug("[LANGFUSE] No supported observation method found on client")
+                yield None
         except Exception as e:
             logger.debug(f"Langfuse generation error: {e}")
             yield None
+        finally:
+            # If we used start_observation, we need to end it manually
+            if observation and hasattr(observation, "end"):
+                try:
+                    observation.end()
+                except Exception as e:
+                    logger.debug(f"Langfuse observation.end() error: {e}")
 
     def update_generation(
         self,
         generation: Any,
         output: str | None = None,
         usage: dict[str, int] | None = None,
+        usage_details: dict[str, int] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Update a generation with output and usage."""
@@ -234,11 +258,13 @@ class LangfuseClient:
             update_kwargs: dict[str, Any] = {}
             if output is not None:
                 update_kwargs["output"] = output
-            if usage:
-                update_kwargs["usage"] = {
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
+            if usage_details:
+                update_kwargs["usage_details"] = usage_details
+            elif usage:
+                # Support both usage and usage_details formats
+                update_kwargs["usage_details"] = {
+                    "input": usage.get("prompt_tokens", 0),
+                    "output": usage.get("completion_tokens", 0),
                 }
             if metadata:
                 if hasattr(generation, "metadata") and generation.metadata:
