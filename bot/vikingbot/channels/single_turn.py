@@ -61,7 +61,7 @@ class SingleTurnChannel(BaseChannel):
         self._running = True
 
         # Send the message
-        sender_id = self.sender or "default"
+        sender_id = self.sender or "user"
         msg = InboundMessage(
             session_key=SessionKey(
                 type="cli",
