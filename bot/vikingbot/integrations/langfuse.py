@@ -262,10 +262,14 @@ class LangfuseClient:
                 update_kwargs["usage_details"] = usage_details
             elif usage:
                 # Support both usage and usage_details formats
-                update_kwargs["usage_details"] = {
+                usage_details = {
                     "input": usage.get("prompt_tokens", 0),
                     "output": usage.get("completion_tokens", 0),
                 }
+                # Pass through total_tokens if available
+                if "total_tokens" in usage:
+                    usage_details["total"] = usage["total_tokens"]
+                update_kwargs["usage_details"] = usage_details
             if metadata:
                 if hasattr(generation, "metadata") and generation.metadata:
                     update_kwargs["metadata"] = {**generation.metadata, **metadata}
