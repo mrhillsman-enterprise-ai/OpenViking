@@ -23,6 +23,7 @@ from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from openviking.pyagfs.exceptions import AGFSHTTPError
+from openviking.pyagfs.helpers import cp as agfs_cp
 from openviking.server.identity import RequestContext, Role
 from openviking.utils.time_utils import format_simplified, get_current_timestamp, parse_iso_datetime
 from openviking_cli.exceptions import NotFoundError
@@ -193,9 +194,37 @@ class VikingFS:
         finally:
             self._bound_ctx.reset(token)
 
+    @staticmethod
+    def _normalize_uri(uri: str) -> str:
+        """Normalize short-format URIs to the canonical viking:// form."""
+        if uri.startswith("viking://"):
+            return uri
+        return VikingURI.normalize(uri)
+
+    @classmethod
+    def _normalized_uri_parts(cls, uri: str) -> tuple[str, List[str]]:
+        """Normalize a URI and reject ambiguous or platform-specific path traversal forms."""
+        normalized = cls._normalize_uri(uri)
+        parts = [p for p in normalized[len("viking://") :].strip("/").split("/") if p]
+
+        for part in parts:
+            if part in {".", ".."}:
+                raise PermissionError(f"Unsafe URI traversal segment '{part}' in {normalized}")
+            if "\\" in part:
+                raise PermissionError(
+                    f"Unsafe URI path separator '\\\\' in component '{part}' of {normalized}"
+                )
+            if len(part) >= 2 and part[1] == ":" and part[0].isalpha():
+                raise PermissionError(
+                    f"Unsafe URI drive-prefixed component '{part}' in {normalized}"
+                )
+
+        return normalized, parts
+
     def _ensure_access(self, uri: str, ctx: Optional[RequestContext]) -> None:
         real_ctx = self._ctx_or_default(ctx)
-        if not self._is_accessible(uri, real_ctx):
+        normalized_uri, _ = self._normalized_uri_parts(uri)
+        if not self._is_accessible(normalized_uri, real_ctx):
             raise PermissionError(f"Access denied for {uri}")
 
     # ========== AGFS Basic Commands ==========
@@ -331,6 +360,22 @@ class VikingFS:
         self._ensure_access(uri, ctx)
         path = self._uri_to_path(uri, ctx=ctx)
         return self.agfs.stat(path)
+
+    async def exists(self, uri: str, ctx: Optional[RequestContext] = None) -> bool:
+        """Check if a URI exists.
+
+        Args:
+            uri: Viking URI
+            ctx: Request context
+
+        Returns:
+            bool: True if the URI exists, False otherwise
+        """
+        try:
+            await self.stat(uri, ctx=ctx)
+            return True
+        except Exception:
+            return False
 
     async def glob(
         self,
@@ -872,11 +917,10 @@ class VikingFS:
         """
         real_ctx = self._ctx_or_default(ctx)
         account_id = real_ctx.account_id
-        remainder = uri[len("viking://") :].strip("/") if uri.startswith("viking://") else uri
-        if not remainder:
+        _, parts = self._normalized_uri_parts(uri)
+        if not parts:
             return f"/local/{account_id}"
 
-        parts = [p for p in remainder.split("/") if p]
         safe_parts = [self._shorten_component(p, self._MAX_FILENAME_BYTES) for p in parts]
         return f"/local/{account_id}/{'/'.join(safe_parts)}"
 
@@ -926,9 +970,7 @@ class VikingFS:
         For user/agent, the second segment is space unless it's a known structure dir.
         For session, the second segment is always space (when 3+ parts).
         """
-        if not uri.startswith("viking://"):
-            return None
-        parts = [p for p in uri[len("viking://") :].strip("/").split("/") if p]
+        _, parts = self._normalized_uri_parts(uri)
         if len(parts) < 2:
             return None
         scope = parts[0]
@@ -946,12 +988,9 @@ class VikingFS:
 
     def _is_accessible(self, uri: str, ctx: RequestContext) -> bool:
         """Check whether a URI is visible/accessible under current request context."""
+        normalized_uri, parts = self._normalized_uri_parts(uri)
         if ctx.role == Role.ROOT:
             return True
-        if not uri.startswith("viking://"):
-            uri = VikingURI.normalize(uri)
-
-        parts = [p for p in uri[len("viking://") :].strip("/").split("/") if p]
         if not parts:
             return True
 
@@ -961,7 +1000,7 @@ class VikingFS:
         if scope == "_system":
             return False
 
-        space = self._extract_space_from_uri(uri)
+        space = self._extract_space_from_uri(normalized_uri)
         if space is None:
             return True
 
@@ -1444,6 +1483,29 @@ class VikingFS:
         await self._ensure_parent_dirs(to_path)
         self.agfs.write(to_path, content)
         self.agfs.rm(from_path)
+
+    async def copy_directory(
+        self,
+        from_uri: str,
+        to_uri: str,
+        ctx: Optional[RequestContext] = None,
+    ) -> None:
+        """Copy directory recursively.
+
+        Args:
+            from_uri: Source directory URI
+            to_uri: Destination directory URI
+            ctx: Request context
+        """
+        self._ensure_access(from_uri, ctx)
+        self._ensure_access(to_uri, ctx)
+
+        from_path = self._uri_to_path(from_uri, ctx=ctx)
+        to_path = self._uri_to_path(to_uri, ctx=ctx)
+
+        await self._ensure_parent_dirs(to_path)
+
+        await asyncio.to_thread(agfs_cp, self.agfs, from_path, to_path, recursive=True)
 
     # ========== Temp File Operations (backward compatible) ==========
 
